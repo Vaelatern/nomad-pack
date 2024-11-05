@@ -10,6 +10,11 @@ import (
 	"github.com/hashicorp/nomad-pack/internal/pkg/errors"
 	"github.com/hashicorp/nomad-pack/internal/pkg/flag"
 	"github.com/hashicorp/nomad-pack/terminal"
+
+	"bazil.org/fuse"
+	"bazil.org/fuse/fs"
+	_ "bazil.org/fuse/fs/fstestutil"
+	_ "bazil.org/fuse/fuseutil"
 )
 
 // RenderFSCommand is a command that allows users to render the templates within
@@ -48,6 +53,10 @@ func (r RenderFS) toTerminal(c *RenderFSCommand) {
 
 func (r RenderFS) toFile(c *RenderFSCommand, ec *errors.UIErrorContext) error {
 	return nil
+}
+
+type RootEntry struct {
+	conf string
 }
 
 // Run satisfies the Run function of the cli.Command interface.
@@ -124,6 +133,22 @@ func (c *RenderFSCommand) Run(args []string) int {
 	// that display will also have been written to disk.
 	for _, render := range renders {
 		render.toTerminal(c)
+	}
+
+	mountpoint := "./mnt"
+
+	ctx, err := fuse.Mount(mountpoint, fuse.FSName("nomad-pack-fs"), fuse.Subtype("packfs"))
+	if err != nil {
+		c.ui.ErrorWithContext(errors.ErrNoTemplatesRendered, "Failed to mount", errorContext.GetAll()...)
+		return 1
+	}
+	defer ctx.Close()
+	defer fuse.Unmount(mountpoint)
+
+	err = fs.Serve(ctx, RootEntry{conf: "config.yaml"})
+	if err != nil {
+		c.ui.ErrorWithContext(errors.ErrNoTemplatesRendered, "Failed to mount", errorContext.GetAll()...)
+		return 1
 	}
 
 	return 0
