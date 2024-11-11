@@ -119,6 +119,11 @@ func Commands(
 
 	// start building our commands
 	commands := map[string]cli.CommandFactory{
+		"render-fs": func() (cli.Command, error) {
+			return &RenderFSCommand{
+				baseCommand: baseCommand,
+			}, nil
+		},
 		"render": func() (cli.Command, error) {
 			return &RenderCommand{
 				baseCommand: baseCommand,

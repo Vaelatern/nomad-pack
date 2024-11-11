@@ -4,6 +4,8 @@
 package cli
 
 import (
+	"context"
+
 	"github.com/posener/complete"
 
 	"github.com/hashicorp/nomad-pack/internal/pkg/cache"
@@ -23,6 +25,9 @@ import (
 type RenderFSCommand struct {
 	*baseCommand
 	packConfig *cache.PackConfig
+
+	// rootFile is the essential file we will then use to parse out the builds
+	rootFile string
 
 	// renderOutputTemplate is a boolean flag to control whether the output
 	// template is rendered.
@@ -55,16 +60,27 @@ func (r RenderFS) toFile(c *RenderFSCommand, ec *errors.UIErrorContext) error {
 	return nil
 }
 
+type Dir struct {
+}
+
+func (d Dir) Attr(ctx context.Context, attr *fuse.Attr) error {
+	return nil
+}
+
 type RootEntry struct {
 	conf string
 }
 
+func (r RootEntry) Root() (fs.Node, error) {
+	return Dir{}, nil
+}
+
 // Run satisfies the Run function of the cli.Command interface.
 func (c *RenderFSCommand) Run(args []string) int {
-	c.cmdKey = "render fs" // Add cmdKey here to print out helpUsageMessage on Init error
+	c.cmdKey = "render-fs" // Add cmdKey here to print out helpUsageMessage on Init error
 
 	if err := c.Init(
-		WithExactArgs(1, args),
+		WithExactArgs(2, args),
 		WithFlags(c.Flags()),
 		WithNoConfig(),
 	); err != nil {
@@ -73,73 +89,15 @@ func (c *RenderFSCommand) Run(args []string) int {
 		return 1
 	}
 
-	c.packConfig.Name = c.args[0]
+	errorContext := errors.NewUIErrorContext()
 
-	// Set the packConfig defaults if necessary and generate our UI error context.
-	errorContext := initPackCommand(c.packConfig)
+	c.rootFile = c.args[0]
 
-	if err := cache.VerifyPackExists(c.packConfig, errorContext, c.ui); err != nil {
-		return 1
-	}
-
-	client, err := c.getAPIClient()
-	if err != nil {
-		c.ui.ErrorWithContext(err, "failed to initialize client", errorContext.GetAll()...)
-		return 1
-	}
-	packManager := generatePackManager(c.baseCommand, client, c.packConfig)
-
-	renderOutput, err := renderPack(
-		packManager,
-		c.baseCommand.ui,
-		!c.noRenderAuxFiles,
-		!c.noFormat,
-		c.baseCommand.ignoreMissingVars,
-		errorContext,
-	)
-	if err != nil {
-		return 1
-	}
-
-	// The render command should at least render one parent, or one dependant
-	// pack template.
-	if renderOutput.LenParentRenders() < 1 && renderOutput.LenDependentRenders() < 1 {
-		c.ui.ErrorWithContext(errors.ErrNoTemplatesRendered, "no templates rendered", errorContext.GetAll()...)
-		return 1
-	}
-
-	var renders []RenderFS
-
-	// Iterate the rendered files and add these to the list of renders to
-	// output. This allows errors to surface and end things without emitting
-	// partial output and then erroring out.
-
-	// If the user wants to render and display the outputs template file then
-	// render this. In the event the render returns an error, print this but do
-	// not exit. The render can fail due to template function errors, but we
-	// can still display the pack templates from above. The error will be
-	// displayed before the template renders, so the UI looks OK.
-	if c.renderOutputTemplate {
-		var outputRender string
-		outputRender, err = packManager.ProcessOutputTemplate()
-		if err != nil {
-			c.ui.ErrorWithContext(err, "failed to render output template", errorContext.GetAll()...)
-		} else {
-			renders = append(renders, RenderFS{Name: "outputs.tpl", Content: outputRender})
-		}
-	}
-
-	// Output the renders. Output the files first if enabled so that any renders
-	// that display will also have been written to disk.
-	for _, render := range renders {
-		render.toTerminal(c)
-	}
-
-	mountpoint := "./mnt"
+	mountpoint := c.args[1]
 
 	ctx, err := fuse.Mount(mountpoint, fuse.FSName("nomad-pack-fs"), fuse.Subtype("packfs"))
 	if err != nil {
-		c.ui.ErrorWithContext(errors.ErrNoTemplatesRendered, "Failed to mount", errorContext.GetAll()...)
+		c.ui.ErrorWithContext(err, "Failed to mount", errorContext.GetAll()...)
 		return 1
 	}
 	defer ctx.Close()
@@ -147,7 +105,7 @@ func (c *RenderFSCommand) Run(args []string) int {
 
 	err = fs.Serve(ctx, RootEntry{conf: "config.yaml"})
 	if err != nil {
-		c.ui.ErrorWithContext(errors.ErrNoTemplatesRendered, "Failed to mount", errorContext.GetAll()...)
+		c.ui.ErrorWithContext(err, "Failed to mount", errorContext.GetAll()...)
 		return 1
 	}
 
@@ -157,50 +115,6 @@ func (c *RenderFSCommand) Run(args []string) int {
 func (c *RenderFSCommand) Flags() *flag.Sets {
 	return c.flagSet(flagSetOperation|flagSetNeedsApproval, func(set *flag.Sets) {
 		c.packConfig = &cache.PackConfig{}
-
-		f := set.NewSet("Render Options")
-
-		f.StringVar(&flag.StringVar{
-			Name:    "registry",
-			Target:  &c.packConfig.Registry,
-			Default: "",
-			Usage: `Specific registry name containing the pack to be rendered.
-					If not specified, the default registry will be used.`,
-		})
-
-		f.StringVar(&flag.StringVar{
-			Name:    "ref",
-			Target:  &c.packConfig.Ref,
-			Default: "",
-			Usage: `Specific git ref of the pack to be rendered.
-					Supports tags, SHA, and latest. If no ref is specified,
-					defaults to latest.
-
-					Using ref with a file path is not supported.`,
-		})
-
-		f.BoolVar(&flag.BoolVar{
-			Name:    "render-output-template",
-			Target:  &c.renderOutputTemplate,
-			Default: false,
-			Usage: `Controls whether or not the output template file within the
-					pack is rendered and displayed.`,
-		})
-
-		f.BoolVar(&flag.BoolVar{
-			Name:    "skip-aux-files",
-			Target:  &c.noRenderAuxFiles,
-			Default: false,
-			Usage: `Controls whether or not the rendered output contains auxiliary
-					files found in the 'templates' folder.`,
-		})
-
-		f.BoolVar(&flag.BoolVar{
-			Name:    "no-format",
-			Target:  &c.noFormat,
-			Default: false,
-			Usage:   `Controls whether or not to format templates before outputting.`,
-		})
 	})
 }
 
@@ -217,27 +131,27 @@ func (c *RenderFSCommand) Help() string {
 
 	c.Example = `
 	# Render an example pack with override variables in a variable file.
-	nomad-pack render example --var-file="./overrides.hcl"
+	nomad-pack render-fs example --var-file="./overrides.hcl"
 
 	# Render an example pack with cli variable overrides.
-	nomad-pack render example --var="redis_image_version=latest" \
+	nomad-pack render-fs example --var="redis_image_version=latest" \
 		--var="redis_resources={"cpu": "1000", "memory": "512"}"
 
 	# Render an example pack including the outputs template file.
-	nomad-pack render example --render-output-template
+	nomad-pack render-fs example --render-output-template
 
 	# Render an example pack, outputting the rendered templates to file in
 	# addition to the terminal. Setting auto-approve allows the command to
 	# overwrite existing files.
-	nomad-pack render example --to-dir ~/out --auto-approve
+	nomad-pack render-fs example --to-dir ~/out --auto-approve
 
 	# Render a pack under development from the filesystem - supports current
 	# working directory or relative path
-	nomad-pack render .
+	nomad-pack render-fs .
 	`
 
 	return formatHelp(`
-	Usage: nomad-pack render <pack-name> [options]
+	Usage: nomad-pack render-fs <pack-settings> <mountpoint> [options]
 
 	Render the specified Nomad Pack and view the results.
 
