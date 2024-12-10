@@ -5,12 +5,17 @@ package cli
 
 import (
 	"context"
+	"fmt"
+	"io"
+	"os"
 
+	"github.com/BurntSushi/toml"
 	"github.com/posener/complete"
 
 	"github.com/hashicorp/nomad-pack/internal/pkg/cache"
 	"github.com/hashicorp/nomad-pack/internal/pkg/errors"
 	"github.com/hashicorp/nomad-pack/internal/pkg/flag"
+	"github.com/hashicorp/nomad-pack/internal/pkg/helper"
 	"github.com/hashicorp/nomad-pack/terminal"
 
 	"bazil.org/fuse"
@@ -28,6 +33,8 @@ type RenderFSCommand struct {
 
 	// rootFile is the essential file we will then use to parse out the builds
 	rootFile string
+
+	parsedBuilds map[string]PackEntry
 
 	// renderOutputTemplate is a boolean flag to control whether the output
 	// template is rendered.
@@ -60,19 +67,87 @@ func (r RenderFS) toFile(c *RenderFSCommand, ec *errors.UIErrorContext) error {
 	return nil
 }
 
-type Dir struct {
+type RootDir struct {
+	jobs map[string]PackEntry
 }
 
-func (d Dir) Attr(ctx context.Context, attr *fuse.Attr) error {
+func (d *RootDir) Lookup(ctx context.Context, name string) (fs.Node, error) {
+	job, ok := d.jobs[name]
+	if !ok {
+		return nil, fuse.Errno(fuse.ENOENT)
+	}
+	// Return a new node for the job directory
+	return &JobDir{job: job}, nil
+}
+
+func (d RootDir) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
+	var rV []fuse.Dirent
+	for nomen, _ := range d.jobs {
+		var de fuse.Dirent
+		de.Name = nomen
+		de.Type = fuse.DT_Dir
+		rV = append(rV, de)
+	}
+
+	return rV, nil
+}
+
+func (d RootDir) Attr(ctx context.Context, attr *fuse.Attr) error {
+	attr.Mode = os.ModeDir | 0o755
 	return nil
+}
+
+type JobDir struct {
+	job PackEntry
+}
+
+func (d JobDir) Attr(ctx context.Context, attr *fuse.Attr) error {
+	attr.Mode = os.ModeDir | 0o755
+	return nil
+}
+
+func (j *JobDir) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
+	var dirents []fuse.Dirent
+	// For each file in the job directory
+	for name := range j.job.files {
+		de := fuse.Dirent{
+			Name: name,
+			Type: fuse.DT_File,
+		}
+		dirents = append(dirents, de)
+	}
+
+	return dirents, nil
+}
+
+type FileNode struct {
+	name    string
+	content string
+}
+
+func (f *FileNode) Attr(ctx context.Context, attr *fuse.Attr) error {
+	// You can fill in some default attributes here if needed
+	return nil
+}
+
+func (f *FileNode) Read(ctx context.Context, req *fuse.ReadRequest, resp *fuse.ReadResponse) error {
+
+	// Return the file content as a byte slice
+	resp.Data = []byte(f.content)
+	return nil
+}
+
+type PackEntry struct {
+	files map[string]string
 }
 
 type RootEntry struct {
 	conf string
+	jobs map[string]PackEntry
 }
 
 func (r RootEntry) Root() (fs.Node, error) {
-	return Dir{}, nil
+	return &RootDir{jobs: r.jobs}, nil
 }
 
 // Run satisfies the Run function of the cli.Command interface.
@@ -92,18 +167,44 @@ func (c *RenderFSCommand) Run(args []string) int {
 	errorContext := errors.NewUIErrorContext()
 
 	c.rootFile = c.args[0]
-
 	mountpoint := c.args[1]
 
-	ctx, err := fuse.Mount(mountpoint, fuse.FSName("nomad-pack-fs"), fuse.Subtype("packfs"))
+	// Build our cancellation context
+	// XXX: We ignore ctx for now
+	_, closer := helper.WithInterrupt(context.Background())
+	defer closer()
+
+	fp, err := os.Open(c.rootFile)
+	if err != nil {
+		c.ui.ErrorWithContext(err, ErrParsingArgsOrFlags)
+		c.ui.Info(fmt.Sprintf("Failure to open the config file: %v", err))
+		return 1
+	}
+	defer fp.Close()
+	fpContents, err := io.ReadAll(fp)
+	if err != nil {
+		c.ui.ErrorWithContext(err, ErrParsingArgsOrFlags)
+		c.ui.Info(fmt.Sprintf("Failure to read the config file: %v", err))
+		return 1
+	}
+
+	if err := toml.Unmarshal(fpContents, &c.parsedBuilds); err != nil {
+		c.ui.ErrorWithContext(err, ErrParsingArgsOrFlags)
+		c.ui.Info(fmt.Sprintf("Need a toml file, unmarshal error: %v", err))
+		return 1
+	}
+
+	fmt.Println(c.parsedBuilds)
+
+	conn, err := fuse.Mount(mountpoint, fuse.ReadOnly(), fuse.FSName("nomad-pack-fs"), fuse.Subtype("packfs"))
 	if err != nil {
 		c.ui.ErrorWithContext(err, "Failed to mount", errorContext.GetAll()...)
 		return 1
 	}
-	defer ctx.Close()
+	defer conn.Close()
 	defer fuse.Unmount(mountpoint)
 
-	err = fs.Serve(ctx, RootEntry{conf: "config.yaml"})
+	err = fs.Serve(conn, RootEntry{conf: c.rootFile, jobs: c.parsedBuilds})
 	if err != nil {
 		c.ui.ErrorWithContext(err, "Failed to mount", errorContext.GetAll()...)
 		return 1
@@ -130,28 +231,12 @@ func (c *RenderFSCommand) AutocompleteFlags() complete.Flags {
 func (c *RenderFSCommand) Help() string {
 
 	c.Example = `
-	# Render an example pack with override variables in a variable file.
-	nomad-pack render-fs example --var-file="./overrides.hcl"
-
-	# Render an example pack with cli variable overrides.
-	nomad-pack render-fs example --var="redis_image_version=latest" \
-		--var="redis_resources={"cpu": "1000", "memory": "512"}"
-
-	# Render an example pack including the outputs template file.
-	nomad-pack render-fs example --render-output-template
-
-	# Render an example pack, outputting the rendered templates to file in
-	# addition to the terminal. Setting auto-approve allows the command to
-	# overwrite existing files.
-	nomad-pack render-fs example --to-dir ~/out --auto-approve
-
-	# Render a pack under development from the filesystem - supports current
-	# working directory or relative path
-	nomad-pack render-fs .
+	# Render from an example config file to ./mnt
+	nomad-pack render-fs example.toml ./mnt
 	`
 
 	return formatHelp(`
-	Usage: nomad-pack render-fs <pack-settings> <mountpoint> [options]
+	Usage: nomad-pack render-fs <pack-config> <mountpoint> [options]
 
 	Render the specified Nomad Pack and view the results.
 
