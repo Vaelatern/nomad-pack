@@ -1,8 +1,8 @@
-[alpha]
-bravo=4
+[hello_world.jobby]
+message="Let's see"
+register_consul_service = false
 
-[charlie]
-foxtrot=5
-
-[delta]
-wonders="alpha"
+[hello_world.otherjobby]
+message="I'll check this one too"
+register_consul_service = true
+consul_service_name = "otherjobby"
