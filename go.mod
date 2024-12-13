@@ -3,6 +3,7 @@ module github.com/hashicorp/nomad-pack
 go 1.22.4
 
 replace (
+	bazil.org/fuse => github.com/vaelatern/bazil-golang-fuse v0.0.0-20241213062418-114ef4c48c88
 	// Fix error tidying due to Nomad downstream dependencies and the recent
 	// migration of the metrics library.
 	// github.com/armon/go-metrics => github.com/hashicorp/go-metrics v0.5.3
@@ -16,6 +17,8 @@ replace (
 )
 
 require (
+	bazil.org/fuse v0.0.0-20230120002735-62a210ff1fd5
+	github.com/BurntSushi/toml v1.3.2
 	github.com/Masterminds/sprig/v3 v3.2.3
 	github.com/bgentry/speakeasy v0.1.0
 	github.com/briandowns/spinner v1.23.0
@@ -50,7 +53,6 @@ require (
 )
 
 require (
-	bazil.org/fuse v0.0.0-20230120002735-62a210ff1fd5 // indirect
 	cloud.google.com/go v0.110.7 // indirect
 	cloud.google.com/go/compute v1.23.0 // indirect
 	cloud.google.com/go/compute/metadata v0.2.3 // indirect
@@ -69,7 +71,6 @@ require (
 	github.com/Azure/go-autorest/autorest/validation v0.3.0 // indirect
 	github.com/Azure/go-autorest/logger v0.2.1 // indirect
 	github.com/Azure/go-autorest/tracing v0.6.0 // indirect
-	github.com/BurntSushi/toml v1.3.2 // indirect
 	github.com/DataDog/datadog-go v3.2.0+incompatible // indirect
 	github.com/LK4D4/joincontext v0.0.0-20171026170139-1724345da6d5 // indirect
 	github.com/Masterminds/goutils v1.1.1 // indirect

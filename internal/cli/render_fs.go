@@ -170,8 +170,7 @@ func (c *RenderFSCommand) Run(args []string) int {
 	mountpoint := c.args[1]
 
 	// Build our cancellation context
-	// XXX: We ignore ctx for now
-	_, closer := helper.WithInterrupt(context.Background())
+	ctx, closer := helper.WithInterrupt(context.Background())
 	defer closer()
 
 	fp, err := os.Open(c.rootFile)
@@ -204,7 +203,7 @@ func (c *RenderFSCommand) Run(args []string) int {
 	defer conn.Close()
 	defer fuse.Unmount(mountpoint)
 
-	err = fs.Serve(conn, RootEntry{conf: c.rootFile, jobs: c.parsedBuilds})
+	err = fs.ServeContext(ctx, conn, RootEntry{conf: c.rootFile, jobs: c.parsedBuilds})
 	if err != nil {
 		c.ui.ErrorWithContext(err, "Failed to mount", errorContext.GetAll()...)
 		return 1
