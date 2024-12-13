@@ -57,6 +57,23 @@ type RenderFS struct {
 	Content string
 }
 
+type RootDir struct {
+	jobs map[string]PackEntry
+}
+
+type JobDir struct {
+	job PackEntry
+}
+
+type PackEntry struct {
+	files map[string]string
+}
+
+type RootEntry struct {
+	conf string
+	jobs map[string]PackEntry
+}
+
 func (r RenderFS) toTerminal(c *RenderFSCommand) {
 	c.ui.Output(r.Name+":", terminal.WithStyle(terminal.BoldStyle))
 	c.ui.Output("")
@@ -67,8 +84,14 @@ func (r RenderFS) toFile(c *RenderFSCommand, ec *errors.UIErrorContext) error {
 	return nil
 }
 
-type RootDir struct {
-	jobs map[string]PackEntry
+func (r RenderFS) Attr(ctx context.Context, attr *fuse.Attr) error {
+	// You can fill in some default attributes here if needed
+	return nil
+}
+
+func (r RenderFS) Read(ctx context.Context, req *fuse.ReadRequest, resp *fuse.ReadResponse) error {
+	resp.Data = []byte(r.Content)
+	return nil
 }
 
 func (d *RootDir) Lookup(ctx context.Context, name string) (fs.Node, error) {
@@ -97,10 +120,6 @@ func (d RootDir) Attr(ctx context.Context, attr *fuse.Attr) error {
 	return nil
 }
 
-type JobDir struct {
-	job PackEntry
-}
-
 func (d JobDir) Attr(ctx context.Context, attr *fuse.Attr) error {
 	attr.Mode = os.ModeDir | 0o755
 	return nil
@@ -118,32 +137,6 @@ func (j *JobDir) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
 	}
 
 	return dirents, nil
-}
-
-type FileNode struct {
-	name    string
-	content string
-}
-
-func (f *FileNode) Attr(ctx context.Context, attr *fuse.Attr) error {
-	// You can fill in some default attributes here if needed
-	return nil
-}
-
-func (f *FileNode) Read(ctx context.Context, req *fuse.ReadRequest, resp *fuse.ReadResponse) error {
-
-	// Return the file content as a byte slice
-	resp.Data = []byte(f.content)
-	return nil
-}
-
-type PackEntry struct {
-	files map[string]string
-}
-
-type RootEntry struct {
-	conf string
-	jobs map[string]PackEntry
 }
 
 func (r RootEntry) Root() (fs.Node, error) {
