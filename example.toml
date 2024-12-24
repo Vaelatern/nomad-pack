@@ -1,0 +1,9 @@
+[hello_world]
+parserV1=true
+
+[hello_world.jobby]
+message="Let's see"
+
+[hello_world.otherjobby]
+message="I'll check this one too"
+consul_service_name = "otherjobby"
