@@ -16,6 +16,7 @@ import (
 	"github.com/hashicorp/nomad-pack/internal/pkg/errors"
 	"github.com/hashicorp/nomad-pack/internal/pkg/flag"
 	"github.com/hashicorp/nomad-pack/internal/pkg/helper"
+	"github.com/hashicorp/nomad-pack/internal/pkg/manager"
 	"github.com/hashicorp/nomad-pack/terminal"
 
 	"bazil.org/fuse"
@@ -58,20 +59,23 @@ type RenderFS struct {
 }
 
 type RootDir struct {
-	jobs map[string]PackEntry
+	jobs map[string]RenderedPackEntry
 }
 
 type JobDir struct {
-	job PackEntry
+	job RenderedPackEntry
 }
 
-type PackEntry struct {
-	files map[string]string
+type PackEntry map[string]interface{}
+
+type RenderedPackEntry struct {
+	original PackEntry
+	files    map[string]string
 }
 
 type RootEntry struct {
 	conf string
-	jobs map[string]PackEntry
+	jobs map[string]RenderedPackEntry
 }
 
 func (r RenderFS) toTerminal(c *RenderFSCommand) {
@@ -143,6 +147,41 @@ func (r RootEntry) Root() (fs.Node, error) {
 	return &RootDir{jobs: r.jobs}, nil
 }
 
+func renderOne(entry PackEntry) (RenderedPackEntry, error) {
+	rV := RenderedPackEntry{}
+	pack := cache.PackConfig{}
+	pack.Init()
+	packManagerConfig := manager.Config{
+		Path:            pack.Path,
+		VariableFiles:   []string{},
+		VariableCLIArgs: map[string]string{},
+		VariableEnvVars: map[string]string{},
+		UseParserV1:     false,
+	}
+	fmt.Println(entry)
+	packManager := manager.NewPackManager(&packManagerConfig, nil)
+	fmt.Println("We managed...")
+	_, err := packManager.ProcessTemplates(true, true, true)
+	fmt.Println("We processed...")
+	if err != nil {
+		return rV, fmt.Errorf("Failed to process templates: %v", err)
+	}
+	fmt.Println("We parsed...")
+	return rV, nil
+}
+
+func render(allEntries map[string]PackEntry) (map[string]RenderedPackEntry, error) {
+	rV := make(map[string]RenderedPackEntry, len(allEntries))
+	var err error
+	for n, entry := range allEntries {
+		rV[n], err = renderOne(entry)
+		if err != nil {
+			return rV, err
+		}
+	}
+	return rV, nil
+}
+
 // Run satisfies the Run function of the cli.Command interface.
 func (c *RenderFSCommand) Run(args []string) int {
 	c.cmdKey = "render-fs" // Add cmdKey here to print out helpUsageMessage on Init error
@@ -196,7 +235,14 @@ func (c *RenderFSCommand) Run(args []string) int {
 	defer conn.Close()
 	defer fuse.Unmount(mountpoint)
 
-	err = fs.ServeContext(ctx, conn, RootEntry{conf: c.rootFile, jobs: c.parsedBuilds})
+	renderedBuilds, err := render(c.parsedBuilds)
+	if err != nil {
+		c.ui.ErrorWithContext(err, "Failed to render", errorContext.GetAll()...)
+		return 1
+	}
+	fmt.Println("Passed error check, serving")
+
+	err = fs.ServeContext(ctx, conn, RootEntry{conf: c.rootFile, jobs: renderedBuilds})
 	if err != nil {
 		c.ui.ErrorWithContext(err, "Failed to mount", errorContext.GetAll()...)
 		return 1
